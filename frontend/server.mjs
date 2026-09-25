@@ -11,7 +11,7 @@
 import express from "express";
 import { pathToFileURL } from "node:url";
 
-import { getLdClient, stringVariation } from "./flags.mjs";
+import { getLdClient, ldContext, stringVariation } from "./flags.mjs";
 
 const SHA = process.env.RAILWAY_GIT_COMMIT_SHA || "dev";
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
@@ -24,11 +24,19 @@ function renderPage({ showBackendStatus }) {
     : "";
   const statusScript = showBackendStatus
     ? `
+    function reportBackendStatus(outcome, elapsedMs) {
+      try {
+        navigator.sendBeacon("/api/backend-status-event?outcome=" + outcome + "&ms=" + Math.round(elapsedMs));
+      } catch (e) { /* telemetry must never break the page */ }
+    }
+    var backendStatusStartedAt = Date.now();
     fetch("${BACKEND_URL}/api/status")
       .then(r => r.json())
       .then(d => { document.getElementById("backend-status").textContent =
-        "Backend online: " + d.service + " version " + d.version; })
-      .catch(() => { document.getElementById("backend-status").textContent = "Backend offline"; });`
+        "Backend online: " + d.service + " version " + d.version;
+        reportBackendStatus("ok", Date.now() - backendStatusStartedAt); })
+      .catch(() => { document.getElementById("backend-status").textContent = "Backend offline";
+        reportBackendStatus("error", Date.now() - backendStatusStartedAt); });`
     : "";
 
   return `<!doctype html>
@@ -57,6 +65,31 @@ export function createApp({ ldClient = getLdClient() } = {}) {
   app.get("/", async (_req, res) => {
     const variation = await stringVariation(ldClient, BACKEND_STATUS_FLAG, "control");
     res.type("html").send(renderPage({ showBackendStatus: variation === "v1" }));
+  });
+
+  // Guarded-release telemetry for enable-backend-status. The status check runs
+  // in the browser, where the Node server SDK cannot see it, so the v1 page
+  // beacons its outcome here and the server emits the custom events. Only the
+  // v1 page calls this route; the control page never does.
+  app.post("/api/backend-status-event", (req, res) => {
+    res.status(204).end();
+    try {
+      if (!ldClient) {
+        return;
+      }
+      const context = ldContext();
+      const elapsedMs = Number(req.query.ms);
+      if (req.query.outcome === "ok") {
+        ldClient.track("enable-backend-status-success", context);
+      } else if (req.query.outcome === "error") {
+        ldClient.track("enable-backend-status-error", context);
+      }
+      if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
+        ldClient.track("enable-backend-status-latency", context, undefined, elapsedMs);
+      }
+    } catch {
+      // Telemetry failures must never surface to the caller.
+    }
   });
 
   return app;
