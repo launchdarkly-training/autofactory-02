@@ -1,6 +1,7 @@
 {
   "schemaVersion": "1.2",
   "flagKey": "enable-backend-status",
+  "targetVariation": "v1",
   "scope": "frontend",
   "releasePlan": {},
   "releaseIntent": {}
